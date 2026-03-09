@@ -4,11 +4,15 @@ mod overlays;
 mod timeline;
 mod windowing;
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate};
 use eframe::egui::{self, Color32, Pos2, Vec2};
-use tray::{Icon, TrayIcon, TrayIconBuilder};
+use tray::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::{
     models::{ActivitySegment, AppConfig, CalendarEvent, ScheduleBlock, Task, TaskCompletionDraft},
@@ -55,6 +59,7 @@ pub struct ProductivApp {
     pub(super) last_refresh: Instant,
     pub(super) widget_window: WidgetWindowState,
     pub(super) quit_requested: bool,
+    pub(super) tray_toggle_requested: Arc<AtomicBool>,
 }
 
 impl ProductivApp {
@@ -66,6 +71,28 @@ impl ProductivApp {
         configure_visuals(&cc.egui_ctx);
 
         let config_draft = database.load_app_config().unwrap_or_default();
+        let tray_toggle_requested = Arc::new(AtomicBool::new(false));
+        let toggle_signal = Arc::clone(&tray_toggle_requested);
+        let egui_ctx = cc.egui_ctx.clone();
+        TrayIconEvent::set_event_handler(Some(move |event| {
+            let should_toggle = matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up | MouseButtonState::Down,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            );
+
+            if should_toggle {
+                toggle_signal.store(true, Ordering::Relaxed);
+                egui_ctx.request_repaint();
+            }
+        }));
+
         let mut app = Self {
             database,
             runtime,
@@ -86,6 +113,7 @@ impl ProductivApp {
             last_refresh: Instant::now() - Duration::from_secs(60),
             widget_window: windowing::default_widget_window(),
             quit_requested: false,
+            tray_toggle_requested,
         };
         app.refresh_all();
         app
@@ -102,11 +130,11 @@ impl eframe::App for ProductivApp {
             self.refresh_all();
         }
 
-        self.maintain_hidden_root(ctx);
         self.process_tray_events();
+        self.sync_root_widget_window(ctx);
 
         if self.widget_window.visible {
-            self.show_widget_viewport(ctx);
+            self.show_widget_contents(ctx);
         }
 
         ctx.request_repaint_after(Duration::from_millis(100));

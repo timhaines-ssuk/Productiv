@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod models;
 mod services;
@@ -24,13 +26,13 @@ fn main() -> anyhow::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1.0, 1.0])
-            .with_min_inner_size([1.0, 1.0])
-            .with_max_inner_size([1.0, 1.0])
+            .with_inner_size([500.0, 840.0])
+            .with_min_inner_size([500.0, 680.0])
+            .with_max_inner_size([500.0, 1200.0])
             .with_position([-10_000.0, -10_000.0])
             .with_decorations(false)
+            .with_resizable(false)
             .with_transparent(true)
-            .with_visible(false)
             .with_taskbar(false)
             .with_title("Productiv Host"),
         ..Default::default()
