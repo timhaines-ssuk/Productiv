@@ -24,9 +24,15 @@ fn main() -> anyhow::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1460.0, 920.0])
-            .with_min_inner_size([1180.0, 720.0])
-            .with_title("Productiv"),
+            .with_inner_size([1.0, 1.0])
+            .with_min_inner_size([1.0, 1.0])
+            .with_max_inner_size([1.0, 1.0])
+            .with_position([-10_000.0, -10_000.0])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_visible(false)
+            .with_taskbar(false)
+            .with_title("Productiv Host"),
         ..Default::default()
     };
 

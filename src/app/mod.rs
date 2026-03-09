@@ -1,12 +1,13 @@
 mod actions;
-mod layout;
-mod planner;
-mod sidebar;
+mod cards;
+mod overlays;
+mod timeline;
+mod windowing;
 
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate};
-use eframe::egui;
+use eframe::egui::{self, Color32, Pos2, Vec2};
 use tray::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::{
@@ -18,7 +19,7 @@ use crate::{
 pub(super) const DAY_START_MINUTE: i32 = 7 * 60;
 pub(super) const DAY_END_MINUTE: i32 = 20 * 60;
 pub(super) const SLOT_MINUTES: i32 = 30;
-pub(super) const SLOT_HEIGHT: f32 = 54.0;
+pub(super) const WIDGET_WIDTH: f32 = 500.0;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum DragPayload {
@@ -26,16 +27,18 @@ pub(super) enum DragPayload {
     Block(i64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SelectedItem {
-    Meeting(i64),
-    Block(i64),
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WidgetWindowState {
+    pub visible: bool,
+    pub position: Pos2,
+    pub size: Vec2,
+    pub focus_pending: bool,
 }
 
 pub struct ProductivApp {
     pub(super) database: Database,
     pub(super) runtime: BackgroundRuntime,
-    pub(super) tray_icon: Option<TrayIcon>,
+    pub(super) _tray_icon: Option<TrayIcon>,
     pub(super) selected_day: NaiveDate,
     pub(super) default_plan_minutes: i32,
     pub(super) draft_task_title: String,
@@ -47,10 +50,11 @@ pub struct ProductivApp {
     pub(super) schedule_blocks: Vec<ScheduleBlock>,
     pub(super) calendar_events: Vec<CalendarEvent>,
     pub(super) recent_activity: Vec<ActivitySegment>,
-    pub(super) selected_item: Option<SelectedItem>,
     pub(super) completion_prompt: Option<TaskCompletionDraft>,
     pub(super) status_message: Option<String>,
     pub(super) last_refresh: Instant,
+    pub(super) widget_window: WidgetWindowState,
+    pub(super) quit_requested: bool,
 }
 
 impl ProductivApp {
@@ -65,7 +69,7 @@ impl ProductivApp {
         let mut app = Self {
             database,
             runtime,
-            tray_icon: create_tray_icon().ok(),
+            _tray_icon: create_tray_icon().ok(),
             selected_day: Local::now().date_naive(),
             default_plan_minutes: 60,
             draft_task_title: String::new(),
@@ -77,10 +81,11 @@ impl ProductivApp {
             schedule_blocks: Vec::new(),
             calendar_events: Vec::new(),
             recent_activity: Vec::new(),
-            selected_item: None,
             completion_prompt: None,
             status_message: None,
             last_refresh: Instant::now() - Duration::from_secs(60),
+            widget_window: windowing::default_widget_window(),
+            quit_requested: false,
         };
         app.refresh_all();
         app
@@ -89,28 +94,41 @@ impl ProductivApp {
 
 impl eframe::App for ProductivApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_secs(1));
+        if self.handle_root_close_requested(ctx) {
+            return;
+        }
+
         if self.last_refresh.elapsed() > Duration::from_secs(3) {
             self.refresh_all();
         }
 
-        self.show_completion_prompt(ctx);
-        self.show_config_window(ctx);
-        self.show_top_bar(ctx);
-        self.show_task_panel(ctx);
-        self.show_detail_panel(ctx);
-        self.show_planner(ctx);
+        self.maintain_hidden_root(ctx);
+        self.process_tray_events();
+
+        if self.widget_window.visible {
+            self.show_widget_viewport(ctx);
+        }
+
+        ctx.request_repaint_after(Duration::from_millis(100));
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
     }
 }
 
 fn configure_visuals(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = egui::Color32::from_rgb(11, 16, 24);
-    visuals.window_fill = egui::Color32::from_rgb(16, 22, 31);
-    visuals.override_text_color = Some(egui::Color32::from_rgb(230, 235, 240));
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(18, 25, 34);
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(44, 81, 118);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(42, 64, 89);
+    let mut visuals = egui::Visuals::light();
+    visuals.panel_fill = Color32::from_rgba_unmultiplied(0, 0, 0, 0);
+    visuals.window_fill = Color32::from_rgb(248, 245, 239);
+    visuals.extreme_bg_color = Color32::from_rgb(234, 229, 222);
+    visuals.override_text_color = Some(Color32::from_rgb(38, 44, 56));
+    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(241, 237, 231);
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(235, 230, 223);
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(225, 236, 232);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(202, 220, 213);
+    visuals.widgets.noninteractive.bg_stroke.color = Color32::from_rgb(216, 210, 202);
+    visuals.window_shadow.color = Color32::from_black_alpha(30);
     ctx.set_visuals(visuals);
 }
 
@@ -132,13 +150,13 @@ fn productiv_icon_rgba() -> Vec<u8> {
             let lane = (8..24).contains(&x) && (6..28).contains(&y);
             let pulse = (12..20).contains(&x) && (10..24).contains(&y);
             let color = if edge {
-                [221, 145, 65, 255]
+                [214, 138, 67, 255]
             } else if pulse {
-                [96, 191, 130, 255]
+                [104, 168, 138, 255]
             } else if lane {
-                [47, 120, 108, 255]
+                [73, 118, 108, 255]
             } else {
-                [20, 27, 38, 255]
+                [245, 240, 232, 255]
             };
             rgba[idx..idx + 4].copy_from_slice(&color);
         }
